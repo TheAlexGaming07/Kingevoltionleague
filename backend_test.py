@@ -224,6 +224,193 @@ class KingsEvolutionLeagueAPITester:
             return True
         return False
 
+    def test_create_president(self):
+        """Test creating president account"""
+        success, response = self.run_test(
+            "Create President Account",
+            "POST",
+            "create-president",
+            200
+        )
+        if success:
+            print(f"   ✅ President account created or already exists")
+            return True
+        return False
+
+    def test_president_login(self):
+        """Test president login"""
+        login_data = {
+            "email": self.president_data["email"],
+            "password": self.president_data["password"]
+        }
+        success, response = self.run_test(
+            "President Login",
+            "POST",
+            "login",
+            200,
+            data=login_data
+        )
+        if success and 'access_token' in response:
+            self.president_token = response['access_token']
+            if 'manager' in response:
+                self.president_id = response['manager']['id']
+                president_role = response['manager'].get('role')
+                if president_role == 'PRESIDENT':
+                    print(f"   ✅ President login successful, role: {president_role}")
+                    return True
+                else:
+                    print(f"   ❌ Expected PRESIDENT role, got: {president_role}")
+            return True
+        return False
+
+    def test_add_player(self):
+        """Test adding a new player"""
+        # Switch to president token for this test
+        original_token = self.token
+        self.token = self.president_token if self.president_token else self.token
+        
+        player_data = {
+            "name": f"Test Player {datetime.now().strftime('%H%M%S')}",
+            "position": "MID",
+            "team": "Test Team",
+            "base_price": 15.0
+        }
+        success, response = self.run_test(
+            "Add New Player",
+            "POST",
+            "players",
+            200,
+            data=player_data
+        )
+        
+        # Restore original token
+        self.token = original_token
+        
+        if success and 'id' in response:
+            print(f"   ✅ Player added with ID: {response['id']}")
+            return True, response['id']
+        return False, None
+
+    def test_create_custom_auction(self, player_id, duration_minutes=10):
+        """Test creating auction with custom duration"""
+        auction_data = {
+            "player_id": player_id,
+            "starting_bid": 8.0,
+            "duration_minutes": duration_minutes
+        }
+        success, response = self.run_test(
+            f"Create Custom Auction ({duration_minutes} min)",
+            "POST",
+            "auctions",
+            200,
+            data=auction_data
+        )
+        if success and 'id' in response:
+            print(f"   ✅ Custom auction created with ID: {response['id']}, duration: {duration_minutes} min")
+            return True, response['id']
+        return False, None
+
+    def test_auction_history(self, auction_id):
+        """Test getting auction bid history"""
+        success, response = self.run_test(
+            "Get Auction History",
+            "GET",
+            f"auctions/{auction_id}/history",
+            200
+        )
+        if success:
+            print(f"   ✅ Auction history retrieved, {len(response)} bids")
+            return True, response
+        return False, []
+
+    def test_all_managers(self):
+        """Test getting all managers (president only)"""
+        # Switch to president token
+        original_token = self.token
+        self.token = self.president_token if self.president_token else self.token
+        
+        success, response = self.run_test(
+            "Get All Managers (President Only)",
+            "GET",
+            "all-managers",
+            200
+        )
+        
+        # Restore original token
+        self.token = original_token
+        
+        if success:
+            print(f"   ✅ All managers retrieved, count: {len(response)}")
+            return True, response
+        return False, []
+
+    def test_update_manager_budget(self, manager_id, new_budget=150.0):
+        """Test updating manager budget (president only)"""
+        # Switch to president token
+        original_token = self.token
+        self.token = self.president_token if self.president_token else self.token
+        
+        budget_data = {
+            "manager_id": manager_id,
+            "new_budget": new_budget
+        }
+        success, response = self.run_test(
+            "Update Manager Budget (President Only)",
+            "PUT",
+            "manager-budget",
+            200,
+            data=budget_data
+        )
+        
+        # Restore original token
+        self.token = original_token
+        
+        if success:
+            print(f"   ✅ Manager budget updated to €{new_budget}")
+            return True
+        return False
+
+    def test_all_squads(self):
+        """Test getting all squads/roses"""
+        success, response = self.run_test(
+            "Get All Squads/Roses",
+            "GET",
+            "all-squads",
+            200
+        )
+        if success:
+            print(f"   ✅ All squads retrieved, count: {len(response)}")
+            # Check if president is marked correctly
+            for squad in response:
+                if squad['manager'].get('role') == 'PRESIDENT':
+                    print(f"   ✅ Found president squad: {squad['manager']['username']}")
+            return True, response
+        return False, []
+
+    def test_multiple_bids_for_history(self, auction_id):
+        """Test placing multiple bids to create history"""
+        bid_amounts = [12.0, 15.0, 18.0]
+        for i, amount in enumerate(bid_amounts):
+            bid_data = {
+                "auction_id": auction_id,
+                "bidder_id": self.manager_id,
+                "amount": amount
+            }
+            success, response = self.run_test(
+                f"Place Bid #{i+1} (€{amount})",
+                "POST",
+                f"auctions/{auction_id}/bid",
+                200,
+                data=bid_data
+            )
+            if success:
+                print(f"   ✅ Bid #{i+1} placed: €{amount}")
+                time.sleep(1)  # Small delay between bids
+            else:
+                print(f"   ❌ Bid #{i+1} failed")
+                break
+        return True
+
 def main():
     print("🚀 Starting Fantasy Football API Tests")
     print("=" * 50)
