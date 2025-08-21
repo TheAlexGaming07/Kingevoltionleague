@@ -4,18 +4,25 @@ import json
 from datetime import datetime
 import time
 
-class FantasyFootballAPITester:
+class KingsEvolutionLeagueAPITester:
     def __init__(self, base_url="https://fantasy-league-12.preview.emergentagent.com/api"):
         self.base_url = base_url
         self.token = None
         self.manager_id = None
+        self.president_token = None
+        self.president_id = None
         self.tests_run = 0
         self.tests_passed = 0
         self.test_user_data = {
-            "username": f"test_user_{datetime.now().strftime('%H%M%S')}",
-            "email": f"test{datetime.now().strftime('%H%M%S')}@manager.com",
+            "username": f"test_manager_{datetime.now().strftime('%H%M%S')}",
+            "email": f"testmgr{datetime.now().strftime('%H%M%S')}@manager.com",
             "password": "testpass123",
             "team_name": "Test FC"
+        }
+        self.president_data = {
+            "username": "presidente",
+            "email": "presidente@kingsevolution.com",
+            "password": "admin123"
         }
 
     def run_test(self, name, method, endpoint, expected_status, data=None, headers=None):
