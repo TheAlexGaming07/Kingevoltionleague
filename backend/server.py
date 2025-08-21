@@ -29,7 +29,7 @@ app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
 # JWT Configuration
-SECRET_KEY = os.environ.get('JWT_SECRET', 'fantasy_football_secret_key_2024')
+SECRET_KEY = os.environ.get('JWT_SECRET', 'kings_evolution_league_secret_2024')
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440
 
@@ -47,6 +47,10 @@ class AuctionStatus(str, Enum):
     CLOSED = "CLOSED"
     PENDING = "PENDING"
 
+class ManagerRole(str, Enum):
+    MANAGER = "MANAGER"
+    PRESIDENT = "PRESIDENT"
+
 # Models
 class Manager(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -54,6 +58,7 @@ class Manager(BaseModel):
     email: EmailStr
     team_name: str
     budget: float = 100.0
+    role: ManagerRole = ManagerRole.MANAGER
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class ManagerCreate(BaseModel):
@@ -65,6 +70,10 @@ class ManagerCreate(BaseModel):
 class ManagerLogin(BaseModel):
     email: EmailStr
     password: str
+
+class BudgetUpdate(BaseModel):
+    manager_id: str
+    new_budget: float
 
 class Player(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -83,14 +92,26 @@ class PlayerCreate(BaseModel):
     team: str
     base_price: float
 
+class BidHistory(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    auction_id: str
+    bidder_id: str
+    bidder_username: str
+    amount: float
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
 class Auction(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     player_id: str
     current_bid: float
     current_bidder: Optional[str] = None
+    current_bidder_username: Optional[str] = None
     status: AuctionStatus = AuctionStatus.ACTIVE
     end_time: datetime
     participants: List[str] = []
+    bid_history: List[BidHistory] = []
+    created_by: str
+    duration_minutes: int = 5
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class AuctionCreate(BaseModel):
@@ -109,6 +130,11 @@ class Squad(BaseModel):
     players: List[str] = []  # player IDs
     formation: str = "4-3-3"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class SquadDisplay(BaseModel):
+    manager: Manager
+    players: List[Player]
+    formation: str = "4-3-3"
 
 # Helper Functions
 def hash_password(password: str) -> str:
@@ -134,6 +160,17 @@ async def get_current_manager(credentials: HTTPAuthorizationCredentials = Depend
         return manager_id
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+async def get_current_manager_data(manager_id: str = Depends(get_current_manager)):
+    manager_doc = await db.managers.find_one({"id": manager_id})
+    if not manager_doc:
+        raise HTTPException(status_code=404, detail="Manager not found")
+    return Manager(**manager_doc)
+
+async def require_president_role(manager: Manager = Depends(get_current_manager_data)):
+    if manager.role != ManagerRole.PRESIDENT:
+        raise HTTPException(status_code=403, detail="Only presidents can perform this action")
+    return manager
 
 # Routes - Authentication
 @api_router.post("/register")
@@ -184,19 +221,50 @@ async def get_players():
     return [Player(**player) for player in players]
 
 @api_router.post("/players", response_model=Player)
-async def create_player(player_data: PlayerCreate, manager_id: str = Depends(get_current_manager)):
+async def create_player(player_data: PlayerCreate, manager: Manager = Depends(get_current_manager_data)):
+    # Only presidents or managers can add players (you can restrict this further if needed)
     player = Player(**player_data.dict())
     await db.players.insert_one(player.dict())
     return player
+
+# Routes - Manager Management (President only)
+@api_router.get("/all-managers", response_model=List[Manager])
+async def get_all_managers(manager: Manager = Depends(require_president_role)):
+    managers = await db.managers.find().to_list(None)
+    result = []
+    for mgr_doc in managers:
+        if "password" in mgr_doc:
+            del mgr_doc["password"]
+        result.append(Manager(**mgr_doc))
+    return result
+
+@api_router.put("/manager-budget")
+async def update_manager_budget(budget_data: BudgetUpdate, president: Manager = Depends(require_president_role)):
+    # Update manager budget
+    result = await db.managers.update_one(
+        {"id": budget_data.manager_id},
+        {"$set": {"budget": budget_data.new_budget}}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Manager not found")
+    
+    return {"message": "Budget updated successfully", "new_budget": budget_data.new_budget}
 
 # Routes - Auctions
 @api_router.get("/auctions", response_model=List[Auction])
 async def get_auctions():
     auctions = await db.auctions.find().to_list(None)
-    return [Auction(**auction) for auction in auctions]
+    result = []
+    for auction_doc in auctions:
+        # Convert bid_history if it exists
+        if "bid_history" in auction_doc:
+            auction_doc["bid_history"] = [BidHistory(**bid) for bid in auction_doc["bid_history"]]
+        result.append(Auction(**auction_doc))
+    return result
 
 @api_router.post("/auctions", response_model=Auction)
-async def create_auction(auction_data: AuctionCreate, manager_id: str = Depends(get_current_manager)):
+async def create_auction(auction_data: AuctionCreate, manager: Manager = Depends(get_current_manager_data)):
     # Check if player exists
     player = await db.players.find_one({"id": auction_data.player_id})
     if not player:
@@ -211,14 +279,16 @@ async def create_auction(auction_data: AuctionCreate, manager_id: str = Depends(
     auction = Auction(
         player_id=auction_data.player_id,
         current_bid=auction_data.starting_bid,
-        end_time=end_time
+        end_time=end_time,
+        created_by=manager.id,
+        duration_minutes=auction_data.duration_minutes
     )
     
     await db.auctions.insert_one(auction.dict())
     return auction
 
 @api_router.post("/auctions/{auction_id}/bid")
-async def place_bid(auction_id: str, bid_data: Bid, manager_id: str = Depends(get_current_manager)):
+async def place_bid(auction_id: str, bid_data: Bid, manager: Manager = Depends(get_current_manager_data)):
     # Get auction
     auction_doc = await db.auctions.find_one({"id": auction_id})
     if not auction_doc:
@@ -241,10 +311,17 @@ async def place_bid(auction_id: str, bid_data: Bid, manager_id: str = Depends(ge
     if bid_data.amount <= auction.current_bid:
         raise HTTPException(status_code=400, detail="Bid must be higher than current bid")
     
-    # Get manager budget
-    manager_doc = await db.managers.find_one({"id": manager_id})
-    if not manager_doc or manager_doc["budget"] < bid_data.amount:
+    # Check manager budget
+    if manager.budget < bid_data.amount:
         raise HTTPException(status_code=400, detail="Insufficient budget")
+    
+    # Create bid history entry
+    bid_history_entry = BidHistory(
+        auction_id=auction_id,
+        bidder_id=manager.id,
+        bidder_username=manager.username,
+        amount=bid_data.amount
+    )
     
     # Update auction
     await db.auctions.update_one(
@@ -252,13 +329,24 @@ async def place_bid(auction_id: str, bid_data: Bid, manager_id: str = Depends(ge
         {
             "$set": {
                 "current_bid": bid_data.amount,
-                "current_bidder": manager_id
+                "current_bidder": manager.id,
+                "current_bidder_username": manager.username
             },
-            "$addToSet": {"participants": manager_id}
+            "$addToSet": {"participants": manager.id},
+            "$push": {"bid_history": bid_history_entry.dict()}
         }
     )
     
     return {"message": "Bid placed successfully", "amount": bid_data.amount}
+
+@api_router.get("/auctions/{auction_id}/history", response_model=List[BidHistory])
+async def get_auction_history(auction_id: str):
+    auction_doc = await db.auctions.find_one({"id": auction_id})
+    if not auction_doc:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    
+    bid_history = auction_doc.get("bid_history", [])
+    return [BidHistory(**bid) for bid in bid_history]
 
 # Routes - Squad Management
 @api_router.get("/my-squad")
@@ -266,6 +354,30 @@ async def get_my_squad(manager_id: str = Depends(get_current_manager)):
     # Get manager's players
     players = await db.players.find({"current_owner": manager_id}).to_list(None)
     return [Player(**player) for player in players]
+
+@api_router.get("/all-squads", response_model=List[SquadDisplay])
+async def get_all_squads():
+    # Get all managers
+    managers = await db.managers.find().to_list(None)
+    result = []
+    
+    for manager_doc in managers:
+        if "password" in manager_doc:
+            del manager_doc["password"]
+        manager = Manager(**manager_doc)
+        
+        # Get manager's players
+        players_docs = await db.players.find({"current_owner": manager.id}).to_list(None)
+        players = [Player(**player) for player in players_docs]
+        
+        squad_display = SquadDisplay(
+            manager=manager,
+            players=players,
+            formation="4-3-3"  # Default formation
+        )
+        result.append(squad_display)
+    
+    return result
 
 @api_router.get("/managers/{manager_id}")
 async def get_manager_profile(manager_id: str):
@@ -281,7 +393,7 @@ async def get_manager_profile(manager_id: str):
 
 # Seed initial players
 @api_router.post("/seed-players")
-async def seed_initial_players(manager_id: str = Depends(get_current_manager)):
+async def seed_initial_players(manager: Manager = Depends(get_current_manager_data)):
     # Check if players already exist
     existing_count = await db.players.count_documents({})
     if existing_count > 0:
@@ -301,6 +413,9 @@ async def seed_initial_players(manager_id: str = Depends(get_current_manager)):
         {"name": "Jamal Musiala", "position": PlayerPosition.MID, "team": "Bayern", "base_price": 20.0},
         {"name": "Alphonso Davies", "position": PlayerPosition.DEF, "team": "Bayern", "base_price": 16.0},
         {"name": "Thibaut Courtois", "position": PlayerPosition.GK, "team": "Real Madrid", "base_price": 12.0},
+        {"name": "Vinicius Junior", "position": PlayerPosition.ATT, "team": "Real Madrid", "base_price": 32.0},
+        {"name": "Jude Bellingham", "position": PlayerPosition.MID, "team": "Real Madrid", "base_price": 28.0},
+        {"name": "Eduardo Camavinga", "position": PlayerPosition.MID, "team": "Real Madrid", "base_price": 24.0},
     ]
     
     players_to_insert = []
@@ -310,6 +425,37 @@ async def seed_initial_players(manager_id: str = Depends(get_current_manager)):
     
     await db.players.insert_many(players_to_insert)
     return {"message": f"Seeded {len(players_to_insert)} players successfully"}
+
+# Create first president user
+@api_router.post("/create-president")
+async def create_president():
+    # Check if president already exists
+    existing_president = await db.managers.find_one({"role": "PRESIDENT"})
+    if existing_president:
+        return {"message": "President already exists"}
+    
+    # Create president user
+    president_data = {
+        "username": "presidente",
+        "email": "presidente@kingsevolution.com",
+        "password": "admin123",
+        "team_name": "Kings Evolution League"
+    }
+    
+    # Hash password
+    hashed_password = hash_password(president_data["password"])
+    
+    # Create manager with president role
+    manager_dict = president_data.copy()
+    del manager_dict["password"]
+    manager = Manager(**manager_dict, role=ManagerRole.PRESIDENT, budget=999999.0)
+    
+    # Store in DB
+    manager_doc = manager.dict()
+    manager_doc["password"] = hashed_password
+    await db.managers.insert_one(manager_doc)
+    
+    return {"message": "President created successfully", "username": "presidente", "email": "presidente@kingsevolution.com", "password": "admin123"}
 
 # Include the router in the main app
 app.include_router(api_router)
