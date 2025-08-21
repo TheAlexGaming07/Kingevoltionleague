@@ -227,7 +227,14 @@ async def place_bid(auction_id: str, bid_data: Bid, manager_id: str = Depends(ge
     auction = Auction(**auction_doc)
     
     # Check if auction is active
-    if auction.status != AuctionStatus.ACTIVE or auction.end_time < datetime.now(timezone.utc):
+    current_time = datetime.now(timezone.utc)
+    # Ensure auction.end_time is timezone-aware
+    if auction.end_time.tzinfo is None:
+        auction_end_time = auction.end_time.replace(tzinfo=timezone.utc)
+    else:
+        auction_end_time = auction.end_time
+    
+    if auction.status != AuctionStatus.ACTIVE or auction_end_time < current_time:
         raise HTTPException(status_code=400, detail="Auction is not active")
     
     # Check if bid is higher than current
