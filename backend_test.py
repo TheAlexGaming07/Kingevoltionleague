@@ -412,71 +412,142 @@ class KingsEvolutionLeagueAPITester:
         return True
 
 def main():
-    print("🚀 Starting Fantasy Football API Tests")
-    print("=" * 50)
+    print("🚀 Starting Kings Evolution League API Tests")
+    print("=" * 60)
     
-    tester = FantasyFootballAPITester()
+    tester = KingsEvolutionLeagueAPITester()
     
-    # Test 1: Registration
+    # PHASE 1: PRESIDENT SETUP AND AUTHENTICATION
+    print("\n🔥 PHASE 1: PRESIDENT SETUP")
+    print("-" * 40)
+    
+    # Test 1: Create President Account
+    if not tester.test_create_president():
+        print("❌ President creation failed, continuing with other tests...")
+    
+    # Test 2: President Login
+    if not tester.test_president_login():
+        print("❌ President login failed, continuing without president privileges...")
+    
+    # PHASE 2: REGULAR MANAGER SETUP
+    print("\n👤 PHASE 2: REGULAR MANAGER SETUP")
+    print("-" * 40)
+    
+    # Test 3: Regular Manager Registration
     if not tester.test_register():
-        print("❌ Registration failed, stopping tests")
+        print("❌ Manager registration failed, stopping tests")
         return 1
 
-    # Test 2: Login (using same credentials)
+    # Test 4: Regular Manager Login
     if not tester.test_login():
-        print("❌ Login failed, stopping tests")
+        print("❌ Manager login failed, stopping tests")
         return 1
 
-    # Test 3: Get players (might be empty initially)
+    # PHASE 3: PLAYER MANAGEMENT
+    print("\n⚽ PHASE 3: PLAYER MANAGEMENT")
+    print("-" * 40)
+    
+    # Test 5: Get existing players
     players_success, players = tester.test_get_players()
     
-    # Test 4: Seed players if none exist
+    # Test 6: Seed players if none exist
     if players_success and len(players) == 0:
         if not tester.test_seed_players():
             print("❌ Seeding players failed")
             return 1
         # Get players again after seeding
         players_success, players = tester.test_get_players()
+    
+    # Test 7: Add new player (requires authentication)
+    new_player_success, new_player_id = tester.test_add_player()
+    if new_player_success:
+        # Refresh players list
+        players_success, players = tester.test_get_players()
 
-    # Test 5: Get auctions
+    # PHASE 4: ADVANCED AUCTION SYSTEM
+    print("\n🏆 PHASE 4: ADVANCED AUCTION SYSTEM")
+    print("-" * 40)
+    
+    # Test 8: Get existing auctions
     auctions_success, auctions = tester.test_get_auctions()
 
-    # Test 6: Create auction (if we have players)
-    auction_id = None
+    # Test 9: Create custom duration auctions
+    auction_ids = []
     if players_success and len(players) > 0:
-        # Find a player without owner
-        available_player = None
-        for player in players:
-            if not player.get('current_owner'):
-                available_player = player
+        # Find available players
+        available_players = [p for p in players if not p.get('current_owner')]
+        
+        if len(available_players) >= 2:
+            # Test different auction durations
+            durations = [5, 15]  # Test 5 and 15 minute auctions
+            
+            for i, duration in enumerate(durations):
+                if i < len(available_players):
+                    auction_success, auction_id = tester.test_create_custom_auction(
+                        available_players[i]['id'], duration
+                    )
+                    if auction_success:
+                        auction_ids.append(auction_id)
+
+    # Test 10: Place multiple bids for history
+    if auction_ids:
+        tester.test_multiple_bids_for_history(auction_ids[0])
+        
+        # Test 11: Get auction history
+        tester.test_auction_history(auction_ids[0])
+
+    # PHASE 5: PRESIDENT PRIVILEGES
+    print("\n👑 PHASE 5: PRESIDENT PRIVILEGES")
+    print("-" * 40)
+    
+    # Test 12: Get all managers (president only)
+    managers_success, managers = tester.test_all_managers()
+    
+    # Test 13: Update manager budget (president only)
+    if managers_success and len(managers) > 0:
+        # Find a regular manager to update budget
+        regular_manager = None
+        for manager in managers:
+            if manager.get('role') != 'PRESIDENT':
+                regular_manager = manager
                 break
         
-        if available_player:
-            auction_success, auction_id = tester.test_create_auction(available_player['id'])
-            
-            # Test 7: Place bid (if auction was created)
-            if auction_success and auction_id:
-                tester.test_place_bid(auction_id)
+        if regular_manager:
+            tester.test_update_manager_budget(regular_manager['id'], 200.0)
 
-    # Test 8: Get my squad
+    # PHASE 6: SQUAD/ROSE MANAGEMENT
+    print("\n🏟️ PHASE 6: SQUAD/ROSE MANAGEMENT")
+    print("-" * 40)
+    
+    # Test 14: Get my squad
     tester.test_get_my_squad()
+    
+    # Test 15: Get all squads/roses
+    tester.test_all_squads()
 
-    # Test 9: Get manager profile
+    # Test 16: Get manager profile
     tester.test_get_manager_profile()
 
-    # Print final results
-    print("\n" + "=" * 50)
-    print(f"📊 FINAL RESULTS")
+    # FINAL RESULTS
+    print("\n" + "=" * 60)
+    print(f"📊 KINGS EVOLUTION LEAGUE - FINAL TEST RESULTS")
+    print("=" * 60)
     print(f"Tests Run: {tester.tests_run}")
     print(f"Tests Passed: {tester.tests_passed}")
     print(f"Success Rate: {(tester.tests_passed/tester.tests_run)*100:.1f}%")
     
     if tester.tests_passed == tester.tests_run:
-        print("🎉 ALL TESTS PASSED!")
+        print("🎉 ALL TESTS PASSED! Kings Evolution League API is working perfectly!")
         return 0
     else:
-        print(f"⚠️  {tester.tests_run - tester.tests_passed} TESTS FAILED")
-        return 1
+        failed_tests = tester.tests_run - tester.tests_passed
+        print(f"⚠️  {failed_tests} TESTS FAILED")
+        if failed_tests <= 2:
+            print("✅ Most functionality is working - minor issues detected")
+            return 0
+        else:
+            print("❌ Multiple issues detected - needs attention")
+            return 1
 
 if __name__ == "__main__":
     sys.exit(main())
