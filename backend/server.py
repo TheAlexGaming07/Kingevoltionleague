@@ -257,9 +257,24 @@ async def get_auctions():
     auctions = await db.auctions.find().to_list(None)
     result = []
     for auction_doc in auctions:
+        # Remove MongoDB _id field
+        if "_id" in auction_doc:
+            del auction_doc["_id"]
+        
         # Convert bid_history if it exists
         if "bid_history" in auction_doc:
             auction_doc["bid_history"] = [BidHistory(**bid) for bid in auction_doc["bid_history"]]
+        
+        # Handle missing fields with defaults
+        if "created_by" not in auction_doc:
+            auction_doc["created_by"] = "unknown"
+        if "duration_minutes" not in auction_doc:
+            auction_doc["duration_minutes"] = 5
+        if "participants" not in auction_doc:
+            auction_doc["participants"] = []
+        if "bid_history" not in auction_doc:
+            auction_doc["bid_history"] = []
+            
         result.append(Auction(**auction_doc))
     return result
 
